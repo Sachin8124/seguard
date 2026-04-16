@@ -1,18 +1,9 @@
-FROM nginx:alpine
+FROM python:3.11-alpine
 
-RUN rm /etc/nginx/conf.d/default.conf
+WORKDIR /app
 
-RUN printf 'server {\n\
-    listen 3000;\n\
-    root /usr/share/nginx/html;\n\
-    index se-guard-dashboard.html;\n\
-    location / {\n\
-        try_files $uri $uri/ =404;\n\
-    }\n\
-}\n' > /etc/nginx/conf.d/default.conf
-
-COPY Project/frontend/ /usr/share/nginx/html/
+COPY Project/frontend/ /app/
 
 EXPOSE 3000
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["python", "-m", "http.server", "3000", "--directory", "/app"]
