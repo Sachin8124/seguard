@@ -6,3 +6,4 @@ wheel
 numpy==1.24.4
 scikit-learn==1.3.2
 bcrypt
+jwt
