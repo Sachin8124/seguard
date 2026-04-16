@@ -1,10 +1,15 @@
 FROM nginx:alpine
 
-RUN sed -i \
-    -e 's/listen\s*80;/listen 3000;/g' \
-    -e 's/listen\s*\[::\]:80;/listen [::]:3000;/g' \
-    -e 's/index\s*index\.html\s*index\.htm\s*;/index se-guard-dashboard.html index.html index.htm;/g' \
-    /etc/nginx/conf.d/default.conf
+RUN rm /etc/nginx/conf.d/default.conf
+
+RUN printf 'server {\n\
+    listen 3000;\n\
+    root /usr/share/nginx/html;\n\
+    index se-guard-dashboard.html;\n\
+    location / {\n\
+        try_files $uri $uri/ =404;\n\
+    }\n\
+}\n' > /etc/nginx/conf.d/default.conf
 
 COPY Project/frontend/ /usr/share/nginx/html/
 
