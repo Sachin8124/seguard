@@ -47,7 +47,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://burmansachin08_db_user:kd3xppS
 DB_NAME = os.getenv("MONGO_DB_NAME", os.getenv("DB_NAME", "seguard"))
 
 try:
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000, tlsCAFile=certifi.where())
     mongo_client.admin.command('ping')
     db = mongo_client[DB_NAME]
     log.info(f"[MongoDB] Connected to {MONGO_URI} - Database: {DB_NAME}")
