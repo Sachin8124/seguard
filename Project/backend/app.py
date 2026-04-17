@@ -22,7 +22,7 @@ import os, time, datetime, logging, json
 from functools import wraps
 from collections import defaultdict
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import bcrypt, jwt
 from pymongo import MongoClient
@@ -720,26 +720,13 @@ def stats():
 
 @app.route("/", methods=["GET"])
 def index():
-    """Serve the auth/login HTML file as the entry point."""
-    return send_from_directory(".", "se_guard_auth.html")
-
-
-@app.route("/dashboard", methods=["GET"])
-def dashboard_page():
-    """Serve the main dashboard HTML file."""
-    return send_from_directory(".", "se-guard-dashboard.html")
-
-
-@app.route("/se-guard-dashboard.html", methods=["GET"])
-def dashboard_html():
-    """Serve the dashboard HTML file (for direct file access)."""
-    return send_from_directory(".", "se-guard-dashboard.html")
-
-
-@app.route("/auth", methods=["GET"])
-def auth_page():
-    """Serve the auth/login HTML file."""
-    return send_from_directory(".", "se_guard_auth.html")
+    """API root — confirm the backend is live."""
+    return _ok({
+        "name": "SE-Guard API",
+        "status": "running",
+        "docs": "/api/detect/demo",
+        "health": "/api/health",
+    })
 
 
 @app.route("/api/detect/demo", methods=["GET"])

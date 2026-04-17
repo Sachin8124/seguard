@@ -942,6 +942,9 @@
 </div>
 
 <script>
+  // Base URL for the SE-Guard backend API (Render deployment)
+  const API_BASE = 'https://seguard.onrender.com';
+
   // --- PARTICLES ---
   (function() {
     const container = document.getElementById('particles');
@@ -1078,7 +1081,7 @@
     document.getElementById('loginSpinner').style.display = 'block';
 
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password: pass, role })
@@ -1103,7 +1106,7 @@
         
         // Redirect to dashboard after 2 seconds
         setTimeout(() => {
-          window.location.href = '/dashboard';
+          window.location.href = 'dashboard.html';
         }, 2000);
       } else {
         btn.classList.remove('loading');
@@ -1151,7 +1154,7 @@
     document.getElementById('regSpinner').style.display = 'block';
 
     try {
-      const response = await fetch('/api/auth/register', {
+      const response = await fetch(`${API_BASE}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
