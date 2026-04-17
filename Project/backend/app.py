@@ -40,17 +40,23 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})  # allow frontend on any port
 SECRET_KEY = os.getenv("SE_GUARD_SECRET", "se-guard-super-secret-dev-key-2025")
 
 # ─── MongoDB Connection ───────────────────────────────────────────────────
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-DB_NAME = os.getenv("DB_NAME", "se_guard_db")
+MONGO_URI = os.getenv("MONGO_URI")          # must be set explicitly; no localhost default
+DB_NAME   = os.getenv("DB_NAME", "se_guard_db")
 
-try:
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    mongo_client.admin.command('ping')
-    db = mongo_client[DB_NAME]
-    log.info(f"[MongoDB] Connected to {MONGO_URI} - Database: {DB_NAME}")
-    MONGO_ENABLED = True
-except Exception as e:
-    log.warning(f"[MongoDB] Connection failed: {e}. Using in-memory storage.")
+if MONGO_URI:
+    try:
+        mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client.admin.command('ping')
+        db = mongo_client[DB_NAME]
+        log.info(f"[MongoDB] Connected to {MONGO_URI} - Database: {DB_NAME}")
+        MONGO_ENABLED = True
+    except Exception as e:
+        log.warning(f"[MongoDB] Connection failed: {e}. Using in-memory storage.")
+        mongo_client = None
+        db = None
+        MONGO_ENABLED = False
+else:
+    log.info("[MongoDB] MONGO_URI not set. Using in-memory storage.")
     mongo_client = None
     db = None
     MONGO_ENABLED = False
