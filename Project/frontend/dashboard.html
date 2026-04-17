@@ -1105,6 +1105,9 @@
 </div>
 
 <script>
+// Base URL for the SE-Guard backend API (Render deployment)
+const API_BASE = 'https://seguard.onrender.com';
+
 // ========== STRICT ABUSE WORD DETECTION ==========
 const ABUSE_WORDS = [
   'fuck', 'shit', 'damn', 'ass', 'bastard', 'bitch', 'cunt', 'dick', 'dick head', 'dumbass', 'motherfucker', 
@@ -1179,7 +1182,7 @@ function checkAuth() {
   
   if (!token) {
     // Redirect to login if no token
-    window.location.href = '/';
+    window.location.href = 'index.html';
     return false;
   }
   
@@ -1197,6 +1200,7 @@ function checkAuth() {
 // ── API HELPER WITH AUTH ──
 async function apiCall(url, options = {}) {
   const token = localStorage.getItem('se_guard_token');
+  const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
   
   const defaults = {
     headers: {
@@ -1205,13 +1209,13 @@ async function apiCall(url, options = {}) {
     }
   };
   
-  const response = await fetch(url, { ...defaults, ...options });
+  const response = await fetch(fullUrl, { ...defaults, ...options });
   
   if (response.status === 401) {
     // Token expired or invalid
     localStorage.removeItem('se_guard_token');
     localStorage.removeItem('se_guard_user');
-    window.location.href = '/';
+    window.location.href = 'index.html';
     return null;
   }
   
@@ -4844,7 +4848,7 @@ function flSubmitInquiry(){
 function logout() {
   localStorage.removeItem('se_guard_token');
   localStorage.removeItem('se_guard_user');
-  window.location.href = '/';
+  window.location.href = 'index.html';
 }
 
 // ── LOAD DATA FROM BACKEND ON INIT ──

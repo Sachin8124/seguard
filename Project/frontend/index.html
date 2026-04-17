@@ -738,7 +738,7 @@
         <div class="success-hex">✓</div>
         <div class="success-title" id="successTitle">ACCESS GRANTED</div>
         <div class="success-msg" id="successMsg">Authentication verified.<br>Redirecting to your SE-GUARD dashboard...</div>
-        <button class="goto-btn" onclick="window.location.href='se-guard-dashboard.html'">ENTER DASHBOARD →</button>
+        <button class="goto-btn" onclick="window.location.href='dashboard.html'">ENTER DASHBOARD →</button>
       </div>
 
       <!-- TAB BAR -->
@@ -1186,7 +1186,7 @@
         
         // Redirect to dashboard after 2 seconds
         setTimeout(() => {
-          window.location.href = '/dashboard';
+          window.location.href = 'dashboard.html';
         }, 2000);
       } else {
         btn.classList.remove('loading');
