@@ -1348,31 +1348,68 @@ function updateFileName(){
 async function handleAddProduct(e){
   e.preventDefault();
   const file = document.getElementById('productImage').files[0];
-  if(!file) return alert('Select image');
-  const reader = new FileReader();
-  reader.onload = async (ev)=>{
-    const newProduct = {
-      id: Date.now(),
-      image: ev.target.result,
-      name: document.getElementById('productName').value,
-      info: document.getElementById('productInfo').value,
-      cost: parseFloat(document.getElementById('productCost').value),
-      price: parseFloat(document.getElementById('productPrice').value),
-      seller: currentUser?.email || 'business@seguard.com',
-      salesCount: 0,
-      type: 'product'
-    };
-    products.push(newProduct);
-    localStorage.setItem('products', JSON.stringify(products));
-    
-    // Save to MongoDB backend
-    await saveToBackend('business', newProduct);
-    
-    closeModal('addProductModal');
-    showNotification('✅ Product added!');
-    loadRole();
+  const editingId = window._editingProductId;
+
+  const processProduct = async (imageData) => {
+    const name = document.getElementById('productName').value;
+    const info = document.getElementById('productInfo').value;
+    const cost = parseFloat(document.getElementById('productCost').value);
+    const price = parseFloat(document.getElementById('productPrice').value);
+    const seller = currentUser?.email || 'business@seguard.com';
+
+    if(editingId){
+      // Edit existing product
+      const idx = products.findIndex(p => p.id === editingId);
+      if(idx >= 0){
+        products[idx] = { ...products[idx], name, info, cost, price, ...(imageData ? {image: imageData} : {}) };
+        localStorage.setItem('products', JSON.stringify(products));
+      }
+      window._editingProductId = null;
+      closeModal('addProductModal');
+      document.querySelector('#addProductModal .modal-title').textContent = '➕ Add Product';
+      showNotification('✅ Product updated!');
+      refreshMyProducts();
+    } else {
+      // Add new product
+      const newProduct = {
+        id: Date.now(),
+        image: imageData || '',
+        name,
+        info,
+        description: info,
+        cost,
+        price,
+        category: 'General',
+        inventory: 0,
+        discount: cost > price ? ((cost - price) / cost * 100).toFixed(0) : 0,
+        seller,
+        salesCount: 0,
+        sales: 0,
+        views: 0,
+        type: 'product'
+      };
+      products.push(newProduct);
+      localStorage.setItem('products', JSON.stringify(products));
+
+      // Save to MongoDB backend
+      await saveToBackend('business', newProduct);
+
+      closeModal('addProductModal');
+      showNotification('✅ Product added!');
+      loadRole();
+    }
   };
-  reader.readAsDataURL(file);
+
+  if(file){
+    const reader = new FileReader();
+    reader.onload = async (ev) => { await processProduct(ev.target.result); };
+    reader.readAsDataURL(file);
+  } else if(editingId){
+    // Edit without changing image
+    await processProduct(null);
+  } else {
+    alert('Please select a product image');
+  }
 }
 
 function toggleWishlist(id){
@@ -2159,18 +2196,72 @@ function buyNowBusiness(id){
   openModal('deliveryModal');
 }
 
-const chatHTML = `<div class="chat-wrap">
-  <div class="chat-messages" id="chatMessages">
-    <div class="chat-msg recv">
-      <div class="chat-bubble">👋 SE-GUARD monitored messaging</div>
-      <div class="chat-time">09:00</div>
+// ── BUSINESS PRODUCT MANAGEMENT FUNCTIONS ──
+function renderMyProductCard(p){
+  const discount = p.cost && p.cost > p.price ? ((p.cost - p.price) / p.cost * 100).toFixed(0) : 0;
+  return `
+    <div class="product-card" id="my-product-${p.id}">
+      <div class="product-image">${p.image ? `<img src="${p.image}">` : `<span style="font-size:60px;">${p.emoji||'🛍️'}</span>`}</div>
+      <div class="product-info">
+        <div class="product-name">${p.name}</div>
+        <div class="product-seller" style="color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">Your Product</div>
+        <div class="product-price-row">
+          <span class="product-price">₹${p.price}</span>
+          ${p.cost && p.cost > p.price ? `<span class="product-price-old">₹${p.cost}</span><span class="product-discount">-${discount}%</span>` : ''}
+        </div>
+        <div class="product-desc">${(p.info||p.description||'').substring(0,60)}...</div>
+        <div style="display:flex;gap:6px;margin-top:10px;flex-direction:column;">
+          <div style="display:flex;gap:6px;">
+            <span style="font-size:11px;color:var(--muted);">📦 Stock: <strong style="color:var(--text);">${p.inventory||p.stock||0}</strong></span>
+            <span style="font-size:11px;color:var(--muted);">👁 Views: <strong style="color:var(--text);">${p.views||0}</strong></span>
+            <span style="font-size:11px;color:var(--muted);">📈 Sales: <strong style="color:var(--accent);">${p.sales||0}</strong></span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-small" style="flex:1;" onclick="editMyProduct(${p.id})">✏️ Edit</button>
+            <button class="btn-small" style="flex:1;background:rgba(255,77,125,.15);color:var(--accent3);border:1px solid rgba(255,77,125,.25);border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" onclick="deleteMyProduct(${p.id})">🗑️ Delete</button>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
-  <div class="chat-input-row">
-    <input class="chat-input" id="msgInput" placeholder="Type message…" onkeydown="if(event.key==='Enter') sendMsg()">
-    <button class="chat-send" onclick="sendMsg()">Send ↑</button>
-  </div>
-</div>`;
+  `;
+}
+
+function filterProducts(query){
+  const grid = document.getElementById('businessProductGrid');
+  if(!grid) return;
+  const q = query.toLowerCase();
+  const filtered = q ? products.filter(p => p.name.toLowerCase().includes(q) || (p.info||'').toLowerCase().includes(q)) : products;
+  grid.innerHTML = filtered.map(p => renderBusinessProductCard(p)).join('') ||
+    '<div class="placeholder"><div class="placeholder-icon">🔍</div><div class="placeholder-text">No products found</div></div>';
+}
+
+function refreshMyProducts(){
+  const myProducts = products.filter(p => p.seller === 'business@seguard.com');
+  const grid = document.getElementById('myProductsGrid');
+  if(!grid) return;
+  grid.innerHTML = myProducts.length ? myProducts.map(p => renderMyProductCard(p)).join('') :
+    '<div class="placeholder"><div class="placeholder-icon">📦</div><div class="placeholder-text">No Products Yet</div><p style="color:var(--muted);margin-top:8px;">Add your first product to start selling</p><button class="btn btn-primary" onclick="openModal(\'addProductModal\')" style="margin-top:16px;">➕ Add Product</button></div>';
+}
+
+function editMyProduct(id){
+  const p = products.find(pr => pr.id === id);
+  if(!p) return;
+  document.getElementById('productName').value = p.name || '';
+  document.getElementById('productInfo').value = p.info || p.description || '';
+  document.getElementById('productCost').value = p.cost || '';
+  document.getElementById('productPrice').value = p.price || '';
+  window._editingProductId = id;
+  openModal('addProductModal');
+  document.querySelector('#addProductModal .modal-title').textContent = '✏️ Edit Product';
+}
+
+function deleteMyProduct(id){
+  if(!confirm('Delete this product? This cannot be undone.')) return;
+  products = products.filter(p => p.id !== id);
+  localStorage.setItem('products', JSON.stringify(products));
+  refreshMyProducts();
+  showNotification('🗑️ Product deleted');
+}
 
 async function loadRole(){
   const roleSelect = document.getElementById('role');
@@ -2201,12 +2292,12 @@ async function loadRole(){
     menu.innerHTML = buildNav([
       {id:'dashboard', icon:'◈', label:'Overview'},
       {id:'products', icon:'◧', label:'Product Mart'},
+      {id:'manage-products', icon:'📦', label:'Manage Products'},
       {id:'business-cart', icon:'🛒', label:'My Cart'},
       {id:'business-wishlist', icon:'❤️', label:'Wishlist'},
       {id:'orders', icon:'◎', label:'Orders'},
       {id:'customers', icon:'◉', label:'Customers'},
       {id:'analytics', icon:'◆', label:'Analytics'},
-      {id:'messages', icon:'◈', label:'Messages'},
       {id:'alerts', icon:'⬡', label:'Security'},
     ]);
     
@@ -2218,6 +2309,8 @@ async function loadRole(){
 
     const myProducts = products.filter(p => p.seller === 'business@seguard.com');
     const myOrders = orders.filter(o => o.seller === 'business@seguard.com');
+    const totalRevenue = myOrders.reduce((sum,o)=>sum+(o.amount||0),0);
+    const avgRating = myProducts.length ? (myProducts.reduce((s,p)=>s+(p.rating||0),0)/myProducts.length).toFixed(1) : '—';
 
     content.innerHTML=`
       <div id="dashboard" class="section active">
@@ -2225,8 +2318,8 @@ async function loadRole(){
         <div class="cards-grid">
           <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">💰</span><div class="stat-value green">₹${todayAnalytics.business.revenue.toFixed(0)}</div><div class="stat-label">Today Revenue</div></div>
           <div class="stat-card accent-blue"><div class="stat-glow"></div><span class="stat-icon">📦</span><div class="stat-value blue">${todayAnalytics.business.productSales}</div><div class="stat-label">Sales Today</div></div>
-          <div class="stat-card accent-warn"><div class="stat-glow"></div><span class="stat-icon">💬</span><div class="stat-value warn">${todayAnalytics.business.messageQuality}/10</div><div class="stat-label">Msg Quality</div></div>
-          <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">👥</span><div class="stat-value green">${myProducts.length}</div><div class="stat-label">Active Products</div></div>
+          <div class="stat-card accent-warn"><div class="stat-glow"></div><span class="stat-icon">⭐</span><div class="stat-value warn">${avgRating}</div><div class="stat-label">Avg Rating</div></div>
+          <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">🛍️</span><div class="stat-value green">${myProducts.length}</div><div class="stat-label">Active Products</div></div>
         </div>
         <div class="two-col">
           <div class="panel">
@@ -2246,10 +2339,23 @@ async function loadRole(){
       </div>
 
       <div id="products" class="section">
-        <div class="page-header"><h2>Product Mart</h2></div>
-        <button class="btn btn-primary" onclick="openModal('addProductModal')" style="margin-bottom:20px;">➕ Add Product</button>
-        <div class="product-grid">
-          ${myProducts.map(p => renderBusinessProductCard(p)).join('') || '<div class="placeholder"><div class="placeholder-icon">🛍️</div><div class="placeholder-text">No Products</div></div>'}
+        <div class="page-header"><h2>Product Mart</h2><p>Browse all available products</p></div>
+        <div class="toolbar" style="margin-bottom:20px;">
+          <div class="toolbar-search"><input type="text" placeholder="🔍 Search products..." oninput="filterProducts(this.value)" style="width:100%;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;font-size:13px;outline:none;"></div>
+        </div>
+        <div class="product-grid" id="businessProductGrid">
+          ${products.map(p => renderBusinessProductCard(p)).join('') || '<div class="placeholder"><div class="placeholder-icon">🛍️</div><div class="placeholder-text">No Products Available</div><p style="color:var(--muted);margin-top:8px;">Check back later for new products</p></div>'}
+        </div>
+      </div>
+
+      <div id="manage-products" class="section">
+        <div class="page-header"><h2>📦 Manage Products</h2><p>Add, edit, and manage your product inventory</p></div>
+        <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="openModal('addProductModal')">➕ Add New Product</button>
+          <button class="btn btn-secondary" onclick="refreshMyProducts()">🔄 Refresh</button>
+        </div>
+        <div id="myProductsGrid" class="product-grid">
+          ${myProducts.length ? myProducts.map(p => renderMyProductCard(p)).join('') : '<div class="placeholder"><div class="placeholder-icon">📦</div><div class="placeholder-text">No Products Yet</div><p style="color:var(--muted);margin-top:8px;">Add your first product to start selling</p><button class="btn btn-primary" onclick="openModal(\'addProductModal\')" style="margin-top:16px;">➕ Add Product</button></div>'}
         </div>
       </div>
 
@@ -2268,46 +2374,89 @@ async function loadRole(){
       </div>
 
       <div id="orders" class="section">
-        <div class="page-header"><h2>Orders</h2></div>
+        <div class="page-header"><h2>📋 Orders</h2><p>Track and manage incoming orders</p></div>
         <div class="panel">
+          <div class="panel-header"><div class="panel-title">Order Management</div><div class="panel-badge">${myOrders.length} orders</div></div>
           <table class="data-table">
-            <thead><tr><th>Order ID</th><th>Product</th><th>Amount</th><th>Date</th></tr></thead>
+            <thead><tr><th>Order ID</th><th>Product</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
             <tbody>
-              ${myOrders.map(o=>`<tr><td>#${o.id}</td><td>${o.productName}</td><td>₹${o.amount}</td><td>${new Date(o.timestamp).toLocaleDateString()}</td></tr>`).join('') || '<tr><td colspan="4">No orders</td></tr>'}
+              ${myOrders.map(o=>`<tr>
+                <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--accent);">#${o.id}</td>
+                <td>${o.productName}</td>
+                <td style="font-weight:700;color:var(--accent);">₹${o.amount}</td>
+                <td><span class="badge ${o.status==='completed'?'badge-green':o.status==='pending'?'badge-warn':'badge-blue'}">${o.status||'placed'}</span></td>
+                <td style="font-size:11px;color:var(--muted);">${new Date(o.timestamp).toLocaleDateString()}</td>
+              </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--muted);">No orders yet</td></tr>'}
             </tbody>
           </table>
         </div>
       </div>
 
       <div id="customers" class="section">
-        <div class="page-header"><h2>Customers</h2></div>
+        <div class="page-header"><h2>👥 Customers</h2><p>View customer activity and ratings</p></div>
         <div class="panel">
+          <div class="panel-header"><div class="panel-title">Customer Overview</div></div>
+          ${myOrders.length > 0 ? `
           <table class="data-table">
-            <thead><tr><th>Customer</th><th>Orders</th><th>Total</th></tr></thead>
+            <thead><tr><th>Customer</th><th>Orders</th><th>Total Spent</th><th>Last Order</th></tr></thead>
             <tbody>
-              ${myOrders.length > 0 ? 'Customer Data' : 'No customer data'}
+              ${Object.entries(myOrders.reduce((map,o)=>{
+                const key=o.customer||'Anonymous';
+                if(!map[key]) map[key]={name:key,count:0,total:0,last:o.timestamp};
+                map[key].count++;map[key].total+=o.amount||0;
+                if(o.timestamp>map[key].last) map[key].last=o.timestamp;
+                return map;
+              },{})).map(([k,v])=>`<tr>
+                <td><div style="display:flex;align-items:center;gap:8px;"><div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;">${v.name.charAt(0).toUpperCase()}</div><span>${v.name}</span></div></td>
+                <td>${v.count}</td>
+                <td style="font-weight:700;color:var(--accent);">₹${v.total.toFixed(0)}</td>
+                <td style="font-size:11px;color:var(--muted);">${new Date(v.last).toLocaleDateString()}</td>
+              </tr>`).join('')}
             </tbody>
-          </table>
+          </table>` : '<div class="placeholder"><div class="placeholder-icon">👥</div><div class="placeholder-text">No customer data yet</div><p style="color:var(--muted);margin-top:8px;">Customer activity will appear here after your first sale</p></div>'}
         </div>
-      </div>
-
-      <div id="analytics" class="section">
-        <div class="page-header"><h2>📊 Today's Analytics</h2></div>
-        <div class="analytics-grid">
-          <div class="stat-card accent-blue"><div class="stat-glow"></div><span class="stat-icon">💬</span><div class="stat-value blue">${todayAnalytics.business.messageQuality}/10</div><div class="stat-label">Message Quality</div></div>
-          <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">📈</span><div class="stat-value green">${todayAnalytics.business.productSales}</div><div class="stat-label">Sales Today</div></div>
-        </div>
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Today's Performance</div></div>
-          <div class="chart-container full-size" id="todayChartContainer">
-            <canvas id="todayChart" style="height:100%;"></canvas>
+        <div class="panel" style="margin-top:20px;">
+          <div class="panel-header"><div class="panel-title">Recent Reviews</div></div>
+          <div id="businessReviewsList">
+            <div class="placeholder"><div class="placeholder-icon">⭐</div><div class="placeholder-text">No reviews yet</div></div>
           </div>
         </div>
       </div>
 
-      <div id="messages" class="section">
-        <div class="page-header"><h2>Messages</h2></div>
-        <div class="panel">${chatHTML}</div>
+      <div id="analytics" class="section">
+        <div class="page-header"><h2>📊 Sales Analytics</h2><p>Performance metrics and revenue tracking</p></div>
+        <div class="analytics-grid">
+          <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">💰</span><div class="stat-value green">₹${totalRevenue.toFixed(0)}</div><div class="stat-label">Total Revenue</div></div>
+          <div class="stat-card accent-blue"><div class="stat-glow"></div><span class="stat-icon">📈</span><div class="stat-value blue">${todayAnalytics.business.productSales}</div><div class="stat-label">Sales Today</div></div>
+          <div class="stat-card accent-warn"><div class="stat-glow"></div><span class="stat-icon">🛍️</span><div class="stat-value warn">${myProducts.length}</div><div class="stat-label">Products Listed</div></div>
+          <div class="stat-card accent-green"><div class="stat-glow"></div><span class="stat-icon">📦</span><div class="stat-value green">${myOrders.length}</div><div class="stat-label">Total Orders</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Revenue Performance</div><div class="panel-badge">Today</div></div>
+          <div style="height:280px;position:relative;">
+            <canvas id="todayChart"></canvas>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">Product Performance</div></div>
+            ${myProducts.length ? `<table class="data-table">
+              <thead><tr><th>Product</th><th>Views</th><th>Sales</th></tr></thead>
+              <tbody>
+                ${myProducts.map(p=>`<tr><td>${p.name}</td><td>${p.views||0}</td><td>${p.sales||0}</td></tr>`).join('')}
+              </tbody>
+            </table>` : '<div class="fl-empty" style="padding:24px;"><div class="fl-empty-icon">📊</div><div class="fl-empty-text">No products to analyze</div></div>'}
+          </div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">Category Breakdown</div></div>
+            ${myProducts.length ? `<table class="data-table">
+              <thead><tr><th>Category</th><th>Products</th></tr></thead>
+              <tbody>
+                ${Object.entries(myProducts.reduce((m,p)=>{m[p.category]=(m[p.category]||0)+1;return m;},{})).map(([cat,cnt])=>`<tr><td>${cat}</td><td>${cnt}</td></tr>`).join('')}
+              </tbody>
+            </table>` : '<div class="fl-empty" style="padding:24px;"><div class="fl-empty-icon">🏷️</div><div class="fl-empty-text">No categories yet</div></div>'}
+          </div>
+        </div>
       </div>
 
       <div id="alerts" class="section">

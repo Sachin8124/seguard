@@ -56,7 +56,13 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://burmansachin08_db_user:kd3xppS
 DB_NAME = os.getenv("MONGO_DB_NAME", os.getenv("DB_NAME", "seguard"))
 
 try:
-    mongo_kwargs = {"serverSelectionTimeoutMS": 5000}
+    mongo_kwargs = {
+        "serverSelectionTimeoutMS": 5000,
+        "socketTimeoutMS": 20000,
+        "connectTimeoutMS": 20000,
+        "tls": True,
+        "retryWrites": True,
+    }
     if certifi is not None:
         mongo_kwargs["tlsCAFile"] = certifi.where()
     mongo_client = MongoClient(MONGO_URI, **mongo_kwargs)
@@ -86,14 +92,20 @@ payments_col = db["payments"] if MONGO_ENABLED else None
 messages_col = db["messages"] if MONGO_ENABLED else None
 reviews_col = db["reviews"] if MONGO_ENABLED else None
 reports_col = db["reports"] if MONGO_ENABLED else None
+product_reviews_col = db["product_reviews"] if MONGO_ENABLED else None
+cart_items_col = db["cart_items"] if MONGO_ENABLED else None
 
 # Detection logs collection
 detection_logs_col = db["detection_logs"] if MONGO_ENABLED else None
 
 # ─── In-memory stores (fallback when MongoDB is unavailable) ──────────────
-USERS     = {}   # email → {hash, role, created_at}
-LOG_STORE = []   # detection audit log (last 500)
-STATS     = defaultdict(lambda: defaultdict(int))  # stats[endpoint][verdict]
+USERS         = {}   # email → {hash, role, created_at}
+LOG_STORE     = []   # detection audit log (last 500)
+STATS         = defaultdict(lambda: defaultdict(int))  # stats[endpoint][verdict]
+PRODUCTS_MEM  = []   # in-memory product store
+ORDERS_MEM    = []   # in-memory orders store
+REVIEWS_MEM   = []   # in-memory product reviews
+CART_MEM      = []   # in-memory cart items
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -615,7 +627,7 @@ def save_collection_data(collection_name):
     
     Body: Any JSON data to be stored
     """
-    valid_collections = ["products", "orders", "payments", "messages", "reviews", "reports", "inquiries", "checkout_sessions"]
+    valid_collections = ["products", "orders", "payments", "messages", "reviews", "reports", "inquiries", "checkout_sessions", "product_reviews", "cart_items"]
     if collection_name not in valid_collections:
         return _err(f"Invalid collection. Use: {', '.join(valid_collections)}", 400)
     
@@ -653,7 +665,7 @@ def get_collection_data(collection_name):
     
     Query params: limit (default 100)
     """
-    valid_collections = ["products", "orders", "payments", "messages", "reviews", "reports", "inquiries", "checkout_sessions"]
+    valid_collections = ["products", "orders", "payments", "messages", "reviews", "reports", "inquiries", "checkout_sessions", "product_reviews", "cart_items"]
     if collection_name not in valid_collections:
         return _err(f"Invalid collection. Use: {', '.join(valid_collections)}", 400)
     
@@ -699,14 +711,423 @@ def db_status():
             "messages": messages_col is not None,
             "reviews": reviews_col is not None,
             "reports": reports_col is not None,
+            "product_reviews": product_reviews_col is not None,
+            "cart_items": cart_items_col is not None,
             "detection_logs": detection_logs_col is not None
         }
     })
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# UTILITY ENDPOINTS
+# BUSINESS E-COMMERCE ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_jwt_payload():
+    """Extract JWT payload from Authorization header."""
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.InvalidTokenError:
+        return None
+
+
+@app.route("/api/business/products", methods=["POST"])
+@_require_json
+def add_business_product():
+    """Add a new product (business sellers only)."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    data = request.get_json()
+    required = ["name", "description", "price", "category"]
+    for field in required:
+        if not data.get(field):
+            return _err(f"Field '{field}' is required")
+
+    product = {
+        "name"        : data["name"],
+        "description" : data["description"],
+        "price"       : float(data["price"]),
+        "category"    : data["category"],
+        "images"      : data.get("images", []),
+        "inventory"   : int(data.get("inventory", 0)),
+        "discount"    : float(data.get("discount", 0)),
+        "seller_id"   : payload.get("sub"),
+        "seller_role" : payload.get("role"),
+        "views"       : 0,
+        "sales"       : 0,
+        "created_at"  : datetime.datetime.utcnow().isoformat(),
+        "timestamp"   : datetime.datetime.utcnow(),
+    }
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            result = products_col.insert_one(product)
+            product["_id"] = str(result.inserted_id)
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to insert product: {e}")
+            product["_id"] = f"mem_{len(PRODUCTS_MEM)}"
+            PRODUCTS_MEM.append(product)
+    else:
+        product["_id"] = f"mem_{len(PRODUCTS_MEM)}"
+        PRODUCTS_MEM.append(product)
+
+    return _ok({"message": "Product added successfully", "product_id": product["_id"]}, 201)
+
+
+@app.route("/api/business/products", methods=["GET"])
+def get_business_products():
+    """Get products for the authenticated seller."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    seller_id = payload.get("sub")
+    limit = request.args.get("limit", 100, type=int)
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            cursor = products_col.find({"seller_id": seller_id}).limit(limit).sort("timestamp", -1)
+            results = []
+            for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                doc.pop("timestamp", None)
+                results.append(doc)
+            return _ok({"products": results, "count": len(results)})
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to get business products: {e}")
+
+    results = [p for p in PRODUCTS_MEM if p.get("seller_id") == seller_id]
+    return _ok({"products": results, "count": len(results)})
+
+
+@app.route("/api/business/products/<product_id>", methods=["PUT"])
+@_require_json
+def update_business_product(product_id):
+    """Update a product (owner only)."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    seller_id = payload.get("sub")
+    data = request.get_json()
+    allowed_fields = ["name", "description", "price", "category", "images", "inventory", "discount"]
+    updates = {k: data[k] for k in allowed_fields if k in data}
+    if not updates:
+        return _err("No valid fields to update")
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            result = products_col.update_one(
+                {"_id": ObjectId(product_id), "seller_id": seller_id},
+                {"$set": updates}
+            )
+            if result.matched_count == 0:
+                return _err("Product not found or access denied", 404)
+            return _ok({"message": "Product updated successfully"})
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to update product: {e}")
+
+    for p in PRODUCTS_MEM:
+        if p["_id"] == product_id and p["seller_id"] == seller_id:
+            p.update(updates)
+            return _ok({"message": "Product updated successfully"})
+    return _err("Product not found or access denied", 404)
+
+
+@app.route("/api/business/products/<product_id>", methods=["DELETE"])
+def delete_business_product(product_id):
+    """Delete a product (owner only)."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    seller_id = payload.get("sub")
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            result = products_col.delete_one(
+                {"_id": ObjectId(product_id), "seller_id": seller_id}
+            )
+            if result.deleted_count == 0:
+                return _err("Product not found or access denied", 404)
+            return _ok({"message": "Product deleted successfully"})
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to delete product: {e}")
+
+    global PRODUCTS_MEM
+    before = len(PRODUCTS_MEM)
+    PRODUCTS_MEM = [p for p in PRODUCTS_MEM if not (p["_id"] == product_id and p["seller_id"] == seller_id)]
+    if len(PRODUCTS_MEM) == before:
+        return _err("Product not found or access denied", 404)
+    return _ok({"message": "Product deleted successfully"})
+
+
+@app.route("/api/products", methods=["GET"])
+def list_public_products():
+    """Public product listing with optional category/search filters."""
+    category = request.args.get("category", "")
+    search   = request.args.get("search", "").lower()
+    limit    = request.args.get("limit", 100, type=int)
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            query = {}
+            if category:
+                query["category"] = category
+            if search:
+                query["$or"] = [
+                    {"name": {"$regex": search, "$options": "i"}},
+                    {"description": {"$regex": search, "$options": "i"}},
+                ]
+            cursor = products_col.find(query).limit(limit).sort("timestamp", -1)
+            results = []
+            for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                doc.pop("timestamp", None)
+                results.append(doc)
+            return _ok({"products": results, "count": len(results)})
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to list public products: {e}")
+
+    results = PRODUCTS_MEM[:]
+    if category:
+        results = [p for p in results if p.get("category") == category]
+    if search:
+        results = [p for p in results if search in p.get("name", "").lower() or search in p.get("description", "").lower()]
+    return _ok({"products": results[:limit], "count": len(results[:limit])})
+
+
+@app.route("/api/cart", methods=["POST"])
+@_require_json
+def add_to_cart():
+    """Add an item to the shopping cart."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    data = request.get_json()
+    product_id = data.get("product_id")
+    qty        = int(data.get("quantity", 1))
+    if not product_id:
+        return _err("Field 'product_id' is required")
+
+    customer_id = payload.get("sub")
+    cart_item = {
+        "customer_id": customer_id,
+        "product_id" : product_id,
+        "quantity"   : qty,
+        "created_at" : datetime.datetime.utcnow().isoformat(),
+        "timestamp"  : datetime.datetime.utcnow(),
+    }
+
+    if MONGO_ENABLED and cart_items_col is not None:
+        try:
+            cart_items_col.update_one(
+                {"customer_id": customer_id, "product_id": product_id},
+                {"$set": {"quantity": qty, "timestamp": datetime.datetime.utcnow()}},
+                upsert=True
+            )
+            return _ok({"message": "Item added to cart"}, 201)
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to add to cart: {e}")
+
+    existing = next((c for c in CART_MEM if c["customer_id"] == customer_id and c["product_id"] == product_id), None)
+    if existing:
+        existing["quantity"] = qty
+    else:
+        CART_MEM.append(cart_item)
+    return _ok({"message": "Item added to cart"}, 201)
+
+
+@app.route("/api/orders", methods=["POST"])
+@_require_json
+def place_order():
+    """Place an order."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    data = request.get_json()
+    required = ["products", "total"]
+    for field in required:
+        if data.get(field) is None:
+            return _err(f"Field '{field}' is required")
+
+    customer_id = payload.get("sub")
+    order = {
+        "order_id"   : f"ORD-{int(time.time())}",
+        "customer_id": customer_id,
+        "products"   : data["products"],
+        "total"      : float(data["total"]),
+        "status"     : "placed",
+        "address"    : data.get("address", {}),
+        "payment"    : data.get("payment", {}),
+        "created_at" : datetime.datetime.utcnow().isoformat(),
+        "timestamp"  : datetime.datetime.utcnow(),
+    }
+
+    if MONGO_ENABLED and orders_col is not None:
+        try:
+            result = orders_col.insert_one(order)
+            order["_id"] = str(result.inserted_id)
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to place order: {e}")
+            order["_id"] = f"mem_{len(ORDERS_MEM)}"
+            ORDERS_MEM.append(order)
+    else:
+        order["_id"] = f"mem_{len(ORDERS_MEM)}"
+        ORDERS_MEM.append(order)
+
+    return _ok({"message": "Order placed successfully", "order_id": order["order_id"]}, 201)
+
+
+@app.route("/api/reviews", methods=["POST"])
+@_require_json
+def add_review():
+    """Add a product review/rating."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    data = request.get_json()
+    product_id = data.get("product_id")
+    rating     = int(data.get("rating", 5))
+    comment    = data.get("comment", "").strip()
+
+    if not product_id:
+        return _err("Field 'product_id' is required")
+    if not 1 <= rating <= 5:
+        return _err("Rating must be between 1 and 5")
+
+    customer_id = payload.get("sub")
+    review = {
+        "product_id" : product_id,
+        "rating"     : rating,
+        "comment"    : comment,
+        "customer_id": customer_id,
+        "created_at" : datetime.datetime.utcnow().isoformat(),
+        "timestamp"  : datetime.datetime.utcnow(),
+    }
+
+    if MONGO_ENABLED and product_reviews_col is not None:
+        try:
+            result = product_reviews_col.insert_one(review)
+            review["_id"] = str(result.inserted_id)
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to add review: {e}")
+            review["_id"] = f"mem_{len(REVIEWS_MEM)}"
+            REVIEWS_MEM.append(review)
+    else:
+        review["_id"] = f"mem_{len(REVIEWS_MEM)}"
+        REVIEWS_MEM.append(review)
+
+    return _ok({"message": "Review added successfully", "review_id": review.get("_id")}, 201)
+
+
+@app.route("/api/business/orders", methods=["GET"])
+def get_business_orders():
+    """Get orders for products sold by the authenticated seller."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    seller_id = payload.get("sub")
+    limit     = request.args.get("limit", 100, type=int)
+
+    if MONGO_ENABLED and orders_col is not None and products_col is not None:
+        try:
+            seller_product_ids = [
+                str(p["_id"]) for p in products_col.find({"seller_id": seller_id}, {"_id": 1})
+            ]
+            cursor = orders_col.find(
+                {"products.product_id": {"$in": seller_product_ids}}
+            ).limit(limit).sort("timestamp", -1)
+            results = []
+            for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                doc.pop("timestamp", None)
+                results.append(doc)
+            return _ok({"orders": results, "count": len(results)})
+        except Exception as e:
+            log.warning(f"[MongoDB] Failed to get business orders: {e}")
+
+    seller_product_ids = {p["_id"] for p in PRODUCTS_MEM if p.get("seller_id") == seller_id}
+    results = [
+        o for o in ORDERS_MEM
+        if any(item.get("product_id") in seller_product_ids for item in o.get("products", []))
+    ]
+    return _ok({"orders": results[:limit], "count": len(results[:limit])})
+
+
+@app.route("/api/business/analytics", methods=["GET"])
+def get_business_analytics():
+    """Get sales analytics for the authenticated seller."""
+    payload = _get_jwt_payload()
+    if not payload:
+        return _err("Authentication required", 401)
+
+    seller_id = payload.get("sub")
+
+    product_count  = 0
+    total_revenue  = 0.0
+    total_sales    = 0
+    review_count   = 0
+    avg_rating     = 0.0
+
+    if MONGO_ENABLED and products_col is not None:
+        try:
+            product_count = products_col.count_documents({"seller_id": seller_id})
+        except Exception as e:
+            log.warning(f"[MongoDB] analytics product count failed: {e}")
+
+    if MONGO_ENABLED and orders_col is not None and products_col is not None:
+        try:
+            seller_product_ids = [
+                str(p["_id"]) for p in products_col.find({"seller_id": seller_id}, {"_id": 1})
+            ]
+            pipeline = [
+                {"$match": {"products.product_id": {"$in": seller_product_ids}}},
+                {"$group": {"_id": None, "total": {"$sum": "$total"}, "count": {"$sum": 1}}}
+            ]
+            agg = list(orders_col.aggregate(pipeline))
+            if agg:
+                total_revenue = agg[0].get("total", 0)
+                total_sales   = agg[0].get("count", 0)
+        except Exception as e:
+            log.warning(f"[MongoDB] analytics orders failed: {e}")
+
+    if MONGO_ENABLED and product_reviews_col is not None and products_col is not None:
+        try:
+            seller_product_ids = [
+                str(p["_id"]) for p in products_col.find({"seller_id": seller_id}, {"_id": 1})
+            ]
+            pipeline = [
+                {"$match": {"product_id": {"$in": seller_product_ids}}},
+                {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+            ]
+            agg = list(product_reviews_col.aggregate(pipeline))
+            if agg:
+                avg_rating   = round(agg[0].get("avg", 0), 1)
+                review_count = agg[0].get("count", 0)
+        except Exception as e:
+            log.warning(f"[MongoDB] analytics reviews failed: {e}")
+
+    return _ok({
+        "seller_id"    : seller_id,
+        "product_count": product_count,
+        "total_revenue": total_revenue,
+        "total_sales"  : total_sales,
+        "review_count" : review_count,
+        "avg_rating"   : avg_rating,
+    })
+
+
+
 @app.route("/api/health", methods=["GET"])
 def health():
     models  = get_models()

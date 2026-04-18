@@ -20,6 +20,7 @@ PyJWT==2.8.0
 
 
 pymongo==4.7.3
+certifi>=2024.2.2
 
 
 python-dotenv==1.0.1
